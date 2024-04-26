@@ -1,0 +1,187 @@
+# opusfilter [--overwrite] [--last LAST] [--single SINGLE] [--n-jobs N_JOBS] CONFIG
+
+
+common:  
+  constants:
+    source: en
+    target: ru
+    path_to_dataset: /content/drive/MyDrive/paralell-corpora-proc/code
+
+
+steps:
+
+# Отфильтровать лишние пробелы
+  - type: preprocess
+    parameters:    
+      inputs:
+      - !varstr "{path_to_dataset}/source_dataset/{source}"
+      - !varstr "{path_to_dataset}/source_dataset/{target}"
+      outputs:
+      - !varstr "{path_to_dataset}/filtered_dataset/step_1/{source}"
+      - !varstr "{path_to_dataset}/filtered_dataset/step_1/{target}"
+      preprocessors:
+      - WhitespaceNormalizer: {}
+
+
+# Отфильтровать дубликаты пар
+  - type: remove_duplicates
+    parameters:    
+      inputs:
+      - !varstr "{path_to_dataset}/filtered_dataset/step_1/{source}"
+      - !varstr "{path_to_dataset}/filtered_dataset/step_1/{target}"
+      outputs:
+      - !varstr "{path_to_dataset}/filtered_dataset/step_2/{source}"
+      - !varstr "{path_to_dataset}/filtered_dataset/step_2/{target}"
+      compare: all
+      hash: xxh64
+      overlap: null
+
+  - type: filter
+    parameters:
+      inputs:
+      - !varstr "{path_to_dataset}/filtered_dataset/step_2/{source}"
+      - !varstr "{path_to_dataset}/filtered_dataset/step_2/{target}"
+      outputs:
+      - !varstr "{path_to_dataset}/filtered_dataset/step_3/{source}"
+      - !varstr "{path_to_dataset}/filtered_dataset/step_3/{target}"
+      filters:
+
+      # Отфильтровать пары в строках которых больше 100 слов
+        - LengthFilter:
+            unit: word
+            min_length: 1
+            max_length: 100
+
+      # Отфильтровать пары у которых соотношение слов более чем в 3 раза отличается 
+        - LengthRatioFilter:
+            unit: word
+            threshold: 3
+
+      # Отфильтровать пары с словами более 40 символов
+        - LongWordFilter:
+            threshold: 40
+
+      # Отфильтровать пары содержащие HTML теги
+        - HtmlTagFilter: {}
+
+      # Отфильтровать пары в которых отличается количество 'терминальных' символов в исходном и конечном текстах
+        - TerminalPunctuationFilter:
+            threshold: -2
+      
+      # Отфильтровать пары в которых количество буквенных символов составляет менее 75%
+        - AlphabetRatioFilter:
+            threshold: 0.75
+            exclude_whitespace: false
+
+
+  - type: filter 
+    parameters:
+      inputs:
+      - !varstr "{path_to_dataset}/filtered_dataset/step_3/{source}"
+      - !varstr "{path_to_dataset}/filtered_dataset/step_3/{target}"
+      outputs:
+      - !varstr "{path_to_dataset}/filtered_dataset/step_4/{source}"
+      - !varstr "{path_to_dataset}/filtered_dataset/step_4/{target}"
+      filters:
+
+      # Отфильтровать пары к которых обнаружены символы не соответствующие заданному языку
+        - CharacterScoreFilter:
+            scripts: [Latin, Cyrillic]
+            thresholds: [1, 1]
+
+      # Отфильтровать пары в по признакам языка
+        - LanguageIDFilter:
+            name: langid
+            id_method: langid
+            languages: [en, ru]
+
+        - LanguageIDFilter:
+            name: cld2
+            id_method: cld2
+            languages: [en, ru]
+
+
+  - type: filter 
+    parameters:
+      inputs:
+      - !varstr "{path_to_dataset}/filtered_dataset/step_4/{source}"
+      - !varstr "{path_to_dataset}/filtered_dataset/step_4/{target}"
+      outputs:
+      - !varstr "{path_to_dataset}/filtered_dataset/step_5/{source}"
+      - !varstr "{path_to_dataset}/filtered_dataset/step_5/{target}"
+      filters:
+
+      # Пользовательский фильтр основан на spaCy.
+      # Отфильтровать пары в которых отличается количество предложенийю.
+        - SentenceCounter:
+            spacy_model: xx_sent_ud_sm
+          module: custom_filter_sentence_counter
+  
+  - type: filter 
+    parameters:
+      inputs:
+      - !varstr "{path_to_dataset}/filtered_dataset/step_5/{source}"
+      - !varstr "{path_to_dataset}/filtered_dataset/step_5/{target}"
+      outputs:
+      - !varstr "{path_to_dataset}/filtered_dataset/step_6/{source}"
+      - !varstr "{path_to_dataset}/filtered_dataset/step_6/{target}"
+      filters:
+
+      # Пользовательский фильтр основан на API LanguageTool
+      # Отфильтровать пары с некорректной орфографией, грамматикой.
+      #- LanguageToolAPI:
+      #    url: 'http://127.0.0.1:8010/v2/check'
+      #  module: custom_filter_LanguageTool_client
+      
+      # Пользовательский фильтр основан на DeepPavlov и SpaCy. 
+      # Отфильтровать пары с некорректной орфографией. 
+       - CustomDeeppavlovSpellingFilter:
+           spacy_model: ru_core_news_sm             
+         module: custom_filter_spelling
+      
+
+      # Пользовательский фильтр основан на SpaCy. 
+      # Отфильтровать пары с некорректной орфографией. 
+      # - CustomSpellingFilter:
+      #     spacy_model: "xx_sent_ud_sm"
+      #   module: custom_filter_spelling
+
+# Фильтр на основе векторного представления предложений
+  - type: filter 
+    parameters:
+      inputs:
+      - !varstr "{path_to_dataset}/filtered_dataset/step_6/{source}"
+      - !varstr "{path_to_dataset}/filtered_dataset/step_6/{target}"
+      outputs:
+      - !varstr "{path_to_dataset}/filtered_dataset/step_7_final/filtered.{source}"
+      - !varstr "{path_to_dataset}/filtered_dataset/step_7_final/filtered.{target}"
+      filters:
+
+        # Встроенная реализация фильтра на основе векторного представления предложений (LASER)  
+        # Отфильтровать пары с значительно отличающимся семантическим смыслом
+        # - SentenceEmbeddingFilter:
+        #     languages: [en, ru]
+        #     threshold: 0.5
+        #     # nn_model: null
+        #     chunksize: 200
+
+        # Пользовательская реализация фильтра на основе векторного представления предложений (LASER)  
+        # Отфильтровать пары с значительно отличающимся семантическим смыслом
+        - SimpleSentenceEmbeddingFilter:
+            source_lang: en
+            target_lang: ru
+            threshold: 0.5
+          module: custom_filter_simple_sentence_embedding
+
+
+
+
+
+
+
+          
+
+
+
+
+
